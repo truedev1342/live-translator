@@ -32,6 +32,12 @@ from accumulator import CaptionAccumulator
 from caption_reader import CaptionReader
 from translator import ENGINES, LANGUAGES, Translator
 
+
+def resource_path(name: str) -> str:
+    """Path to a bundled resource, works both in dev and in a PyInstaller exe."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
 _SENTENCE_ENDS = ".?!。？！\n"
 _MAX_PENDING = 220  # flush a commit chunk even without punctuation past this length
 
@@ -114,7 +120,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Live Translator")
         self.resize(1000, 560)
 
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+        icon_path = resource_path("icon.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -318,7 +324,7 @@ def main():
             pass
 
     app = QApplication(sys.argv)
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+    icon_path = resource_path("icon.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
     win = MainWindow()

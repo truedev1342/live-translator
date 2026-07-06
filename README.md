@@ -28,6 +28,19 @@ python main.py
 2. Turn on Live Captions with **Win + Ctrl + L** (keep the caption bar open).
 3. Play audio / speak — captions appear on the left, translation on the right.
 
+## Build a standalone .exe
+
+No Python needed on the target machine — produce a single file:
+
+```powershell
+pip install -r requirements.txt pyinstaller
+build_exe.bat
+```
+
+The result is **`dist\TYLT.exe`** (~60 MB, self-contained). Double-click to run.
+Windows SmartScreen may warn on first launch because the exe is unsigned —
+choose *More info → Run anyway*.
+
 ## Engines
 
 | Engine                  | Key needed | Notes                                  |
