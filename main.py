@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from datetime import datetime
 
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon
@@ -37,6 +38,17 @@ def resource_path(name: str) -> str:
     """Path to a bundled resource, works both in dev and in a PyInstaller exe."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
+
+
+def transcripts_dir() -> str:
+    """Folder where saved transcripts go (next to the exe / script)."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base, "transcripts")
+    os.makedirs(path, exist_ok=True)
+    return path
 
 _SENTENCE_ENDS = ".?!。？！\n"
 _MAX_PENDING = 220  # flush a commit chunk even without punctuation past this length
@@ -139,10 +151,13 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(lambda e: self._set_status(f"Translate error: {e}"))
         self._worker.start()
 
-        self._debounce = QTimer(self)
-        self._debounce.setSingleShot(True)
-        self._debounce.setInterval(500)
-        self._debounce.timeout.connect(self._translate_tail)
+        # Repeating pulse: while running, re-translate the live tail on a fixed
+        # cadence. (A reset-on-every-caption debounce would starve during
+        # continuous speech, translating only once at the first pause.)
+        self._last_tail = None
+        self._pulse = QTimer(self)
+        self._pulse.setInterval(600)
+        self._pulse.timeout.connect(self._translate_tail)
 
         self._build_ui()
         self._on_engine_changed(self.engine_combo.currentText())
@@ -212,7 +227,8 @@ class MainWindow(QMainWindow):
         root.addLayout(panes, 1)
         self.setCentralWidget(central)
         self.statusBar().showMessage(
-            "Idle. Click Start, then enable Live Captions (Win+Ctrl+L)."
+            "Idle. Start, enable Live Captions (Win+Ctrl+L). Stop saves the full "
+            "transcript to a file and clears memory."
         )
 
     # -- events ------------------------------------------------------------
@@ -226,30 +242,68 @@ class MainWindow(QMainWindow):
             self.toggle_btn.setText("Stop")
             if not self._reader.isRunning():
                 self._reader.start()
+            self._pulse.start()
             self._set_status("Listening for Live Captions…")
         else:
             self.toggle_btn.setText("Start")
+            self._pulse.stop()
             self._reader.stop()
-            self._set_status("Stopped.")
+            self._translate_tail()  # capture the final tail before saving
+            # Give any in-flight translation a moment to land, then save + reset.
+            QTimer.singleShot(600, self._stop_and_save)
 
-    def _clear(self):
+    def _stop_and_save(self):
+        path = self._save_transcript()
+        self._reset_session()
+        if path:
+            self._set_status(f"Saved to {path}  ·  memory cleared, ready for a new start.")
+        else:
+            self._set_status("Stopped. Nothing to save. Ready for a new start.")
+
+    def _save_transcript(self):
+        """Write the full session (source + translation) to a timestamped file."""
+        source = self._acc.full_text.strip()
+        translation = self._full_translation()
+        if not source and not translation:
+            return None
+        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        path = os.path.join(transcripts_dir(), f"transcript_{ts}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"Live Translator transcript — {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+            f.write(
+                f"Engine: {self.engine_combo.currentText()}  |  "
+                f"{self.source_combo.currentText()} -> {self.target_combo.currentText()}\n"
+            )
+            f.write("\n=== SOURCE (captions) ===\n")
+            f.write(source + "\n")
+            f.write("\n=== TRANSLATION ===\n")
+            f.write(translation + "\n")
+        return path
+
+    def _reset_session(self):
+        """Wipe all in-memory transcript state and clear the panes."""
         self._acc.clear()
         self._pending_commit = ""
         self._trans_committed = ""
         self._tail_translation = ""
+        self._last_tail = None
         self._worker.reset()
         self.source_text.clear()
         self.target_text.clear()
-        self._set_status("Cleared.")
+
+    def _clear(self):
+        self._reset_session()
+        self._set_status("Cleared (not saved).")
 
     def _on_caption(self, text: str):
+        # Accumulate the full transcript in memory (for saving on Stop), but
+        # display only the current on-screen caption (rolling, not the whole).
         committed = self._acc.add(text)
-        self._set_text(self.source_text, self._acc.full_text)
+        self._set_text(self.source_text, self._acc.current)
 
         if committed:
             self._pending_commit += committed
             self._flush_commits()
-        self._debounce.start()
 
     def _flush_commits(self):
         """Send completed sentences (or overlong runs) for one-time translation."""
@@ -265,9 +319,10 @@ class MainWindow(QMainWindow):
             self._worker.submit_commit(chunk)
 
     def _translate_tail(self):
-        tail = self._pending_commit + self._acc.current
-        if not tail.strip():
-            return
+        tail = (self._pending_commit + self._acc.current).strip()
+        if not tail or tail == self._last_tail:
+            return  # nothing new since last translation
+        self._last_tail = tail
         self._sync_config()
         self._worker.submit_tail(tail)
 
@@ -280,21 +335,20 @@ class MainWindow(QMainWindow):
         )
 
     def _on_committed_translated(self, text: str):
+        # Keep the full translation in memory only; the pane shows current text.
         if self._trans_committed and not self._trans_committed.endswith((" ", "\n")):
             self._trans_committed += " "
         self._trans_committed += text
-        self._refresh_translation()
 
     def _on_tail_translated(self, text: str):
         self._tail_translation = text
-        self._refresh_translation()
+        self._set_text(self.target_text, text)
 
-    def _refresh_translation(self):
+    def _full_translation(self) -> str:
         joined = self._trans_committed
         if joined and self._tail_translation and not joined.endswith((" ", "\n")):
             joined += " "
-        joined += self._tail_translation
-        self._set_text(self.target_text, joined)
+        return (joined + self._tail_translation).strip()
 
     @staticmethod
     def _set_text(widget: QPlainTextEdit, text: str):

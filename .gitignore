@@ -3,8 +3,11 @@ build/
 dist/
 *.spec
 
+# Saved session transcripts
+transcripts/
+
 # Python
-__pycache__/
+__pycache__/*
 *.pyc
 .venv/
 venv/

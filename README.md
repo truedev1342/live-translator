@@ -26,7 +26,29 @@ python main.py
 
 1. Click **Start**.
 2. Turn on Live Captions with **Win + Ctrl + L** (keep the caption bar open).
-3. Play audio / speak — captions appear on the left, translation on the right.
+3. Play audio / speak — the current caption appears on the left, its translation
+   on the right (the panes show the live text, not the whole history).
+4. Click **Stop** — the **full** session (everything from the start) is saved to
+   `transcripts\transcript_<timestamp>.txt`, then memory is cleared so the next
+   Start begins fresh. **Clear** discards the session without saving.
+
+### Saved transcript
+
+Each file records the engine/languages, then the full source captions and the
+full translation:
+
+```
+Live Translator transcript — 2026-07-23 11:01:13
+Engine: Google (free)  |  Auto detect -> Vietnamese
+
+=== SOURCE (captions) ===
+Hello everyone. Welcome to the show. ...
+
+=== TRANSLATION ===
+Xin chào tất cả mọi người. Chào mừng đến với chương trình. ...
+```
+
+Transcripts are saved next to the app (the `.exe`, or `main.py` in dev).
 
 ## Build a standalone .exe
 
