@@ -48,6 +48,75 @@ class EngineSpec:
     factory: Callable  # (source, target, api_key) -> object with .translate(text)
 
 
+class _FreeGoogle:
+    """Free Google translation over the endpoints Chrome itself uses.
+
+    deep-translator scrapes translate.google.com/m, which now answers 500 (or
+    HTML we cannot parse) often enough to break live use. These JSON endpoints
+    are stable and fast; the second is tried only if the first fails.
+    """
+
+    _ENDPOINTS = (
+        "https://clients5.google.com/translate_a/t?client=dict-chrome-ex",
+        "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t",
+    )
+    _HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        )
+    }
+
+    def __init__(self, source: str, target: str, api_key: str = ""):
+        import requests  # lazy import
+
+        self._session = requests.Session()
+        self._source = source or "auto"
+        self._target = target
+
+    def translate(self, text: str) -> str:
+        import urllib.parse
+
+        params = "&sl=%s&tl=%s&q=%s" % (
+            self._source, self._target, urllib.parse.quote(text)
+        )
+        last = None
+        for base in self._ENDPOINTS:
+            try:
+                resp = self._session.get(
+                    base + params, headers=self._HEADERS, timeout=10
+                )
+                if resp.status_code != 200:
+                    last = f"HTTP {resp.status_code}"
+                    continue
+                out = self._parse(resp.json())
+                if out:
+                    return out
+                last = "empty response"
+            except Exception as exc:            # network / JSON errors
+                last = f"{type(exc).__name__}: {exc}"
+        raise RuntimeError(f"Google (free) failed: {last}")
+
+    @staticmethod
+    def _parse(data) -> str:
+        """Handle every shape these endpoints return."""
+        # dict-chrome-ex: ["text"]  or  [["text", "detected-src"]]
+        if isinstance(data, list) and data and isinstance(data[0], str):
+            return data[0].strip()
+        if isinstance(data, list) and data and isinstance(data[0], list):
+            first = data[0]
+            if first and isinstance(first[0], str) and len(first) <= 2:
+                return first[0].strip()
+            # gtx: [[["chunk", "src", ...], ...], ...]
+            parts = [p[0] for p in first if isinstance(p, list) and p and p[0]]
+            return "".join(parts).strip()
+        if isinstance(data, dict):              # {"sentences": [{"trans": ...}]}
+            return "".join(
+                s.get("trans", "") for s in data.get("sentences", [])
+            ).strip()
+        return ""
+
+
 class _CloudGoogle:
     """Thin wrapper around google-cloud-translate if the user provides a key."""
 
@@ -82,7 +151,7 @@ def _make_deep(engine_cls_name: str):
 
 ENGINES: Dict[str, EngineSpec] = {
     "Google (free)": EngineSpec(
-        "Google (free)", False, True, _make_deep("GoogleTranslator")
+        "Google (free)", False, True, lambda s, t, k: _FreeGoogle(s, t, k)
     ),
     "MyMemory (free)": EngineSpec(
         "MyMemory (free)", False, True, _make_deep("MyMemoryTranslator")

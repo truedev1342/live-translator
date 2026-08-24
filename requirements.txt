@@ -1,5 +1,6 @@
 PyQt6>=6.6
 uiautomation>=2.0.18
 deep-translator>=1.11.4
+requests>=2.31
 # Optional — only needed for the "Google Cloud (API key)" engine:
 # google-cloud-translate>=3.15

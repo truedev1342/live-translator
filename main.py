@@ -50,26 +50,6 @@ def transcripts_dir() -> str:
     os.makedirs(path, exist_ok=True)
     return path
 
-_SENTENCE_ENDS = ".?!。？！\n"
-
-
-def chunk_text(text: str, limit: int = 1500) -> list[str]:
-    """Split text into <=limit pieces, breaking on sentence ends where possible."""
-    text = text.strip()
-    chunks, buf = [], ""
-    for ch in text:
-        buf += ch
-        if len(buf) >= limit and ch in _SENTENCE_ENDS:
-            chunks.append(buf)
-            buf = ""
-        elif len(buf) >= limit * 2:  # no sentence end in sight — hard cut
-            chunks.append(buf)
-            buf = ""
-    if buf.strip():
-        chunks.append(buf)
-    return chunks
-
-
 class TranslationWorker(QThread):
     """Live translator: only the most recent request matters (latest-wins).
 
@@ -119,41 +99,6 @@ class TranslationWorker(QThread):
                 self.msleep(500)
 
 
-class SaveWorker(QThread):
-    """Translate a full transcript (chunked) and write it to disk, off the GUI."""
-
-    done = pyqtSignal(str)   # saved file path
-    failed = pyqtSignal(str)
-
-    def __init__(self, source, config, header, path, parent=None):
-        super().__init__(parent)
-        self._source = source
-        self._config = config          # (engine, src, tgt, api_key)
-        self._header = header
-        self._path = path
-
-    def run(self):
-        try:
-            translator = Translator()
-            translator.configure(*self._config)
-            parts = []
-            for chunk in chunk_text(self._source):
-                try:
-                    parts.append(translator.translate(chunk))
-                except Exception as exc:
-                    parts.append(f"[translation error: {exc}]")
-            translation = " ".join(parts).strip()
-            with open(self._path, "w", encoding="utf-8") as f:
-                f.write(self._header)
-                f.write("\n=== SOURCE (captions) ===\n")
-                f.write(self._source.strip() + "\n")
-                f.write("\n=== TRANSLATION ===\n")
-                f.write(translation + "\n")
-            self.done.emit(self._path)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -166,7 +111,6 @@ class MainWindow(QMainWindow):
 
         self._acc = CaptionAccumulator()
         self._last_src = None          # last text sent to translate (dedup)
-        self._savers = []              # keep SaveWorker refs alive until done
 
         self._reader = CaptionReader()
         self._reader.captionChanged.connect(self._on_caption)
@@ -245,8 +189,8 @@ class MainWindow(QMainWindow):
         root.addLayout(panes, 1)
         self.setCentralWidget(central)
         self.statusBar().showMessage(
-            "Idle. Start, enable Live Captions (Win+Ctrl+L). Stop saves the full "
-            "transcript to a file and clears memory."
+            "Idle. Start, enable Live Captions (Win+Ctrl+L). Stop saves the "
+            "captions to a file and clears memory."
         )
 
     # -- events ------------------------------------------------------------
@@ -267,7 +211,7 @@ class MainWindow(QMainWindow):
             self._save_and_reset()
 
     def _save_and_reset(self):
-        """Kick off a background save of the full transcript, then reset now."""
+        """Write the captions to a file, then reset."""
         source = self._acc.full_text.strip()
         if not source:
             self._reset_session()
@@ -278,18 +222,20 @@ class MainWindow(QMainWindow):
         path = os.path.join(transcripts_dir(), f"transcript_{ts}.txt")
         header = (
             f"Live Translator transcript — {datetime.now():%Y-%m-%d %H:%M:%S}\n"
-            f"Engine: {self.engine_combo.currentText()}  |  "
-            f"{self.source_combo.currentText()} -> {self.target_combo.currentText()}\n"
+            f"{self.source_combo.currentText()}\n"
         )
-        saver = SaveWorker(source, self._current_config(), header, path)
-        saver.done.connect(lambda p: self._set_status(f"Saved transcript to {p}"))
-        saver.failed.connect(lambda e: self._set_status(f"Save failed: {e}"))
-        saver.finished.connect(lambda: self._savers.remove(saver))
-        self._savers.append(saver)
-        saver.start()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(header)
+                f.write("\n=== CAPTIONS ===\n")
+                f.write(source + "\n")
+        except Exception as exc:
+            self._reset_session()
+            self._set_status(f"Stopped. Save failed: {exc}")
+            return
 
         self._reset_session()
-        self._set_status(f"Stopped. Saving transcript to {path} … ready for a new start.")
+        self._set_status(f"Stopped. Saved captions to {path}. Ready for a new start.")
 
     def _reset_session(self):
         """Wipe in-memory transcript state and clear the panes."""
