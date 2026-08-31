@@ -220,14 +220,8 @@ class MainWindow(QMainWindow):
 
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         path = os.path.join(transcripts_dir(), f"transcript_{ts}.txt")
-        header = (
-            f"Live Translator transcript — {datetime.now():%Y-%m-%d %H:%M:%S}\n"
-            f"{self.source_combo.currentText()}\n"
-        )
         try:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(header)
-                f.write("\n=== CAPTIONS ===\n")
                 f.write(source + "\n")
         except Exception as exc:
             self._reset_session()
