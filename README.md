@@ -67,10 +67,10 @@ choose *More info → Run anyway*.
 
 | Engine                  | Key needed | Notes                                  |
 |-------------------------|:----------:|----------------------------------------|
-| Google (free)           | no         | Unofficial endpoint; rate-limited      |
-| MyMemory (free)         | no         | Good fallback                          |
-| Google Cloud (API key)  | yes        | Needs `google-cloud-translate` + key   |
-| DeepL (API key)         | yes        | Highest quality for supported langs    |
+| Google (free)           | No         | Unofficial endpoint; rate-limited      |
+| MyMemory (free)         | No         | Good fallback                          |
+| Google Cloud (API key)  | Yes        | Needs `google-cloud-translate` + key   |
+| DeepL (API key)         | Yes        | Highest quality for supported langs    |
 
 For key-based engines, paste the key in the **API key** field (it appears only
 when such an engine is selected).
