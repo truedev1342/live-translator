@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from accumulator import CaptionAccumulator
+from accumulator import build_transcript
 from caption_reader import CaptionReader
 from translator import ENGINES, LANGUAGES, Translator
 
@@ -99,6 +99,34 @@ class TranslationWorker(QThread):
                 self.msleep(500)
 
 
+class SaveWorker(QThread):
+    """Folds the session's snapshots into a transcript and writes it, off the GUI.
+
+    Folding an hour of captions takes about a second, and a long meeting more —
+    time the window should not spend frozen after Stop.
+    """
+
+    done = pyqtSignal(str)     # saved file path, or "" when there was nothing
+    failed = pyqtSignal(str)
+
+    def __init__(self, snapshots, path, parent=None):
+        super().__init__(parent)
+        self._snapshots = snapshots
+        self._path = path
+
+    def run(self):
+        try:
+            text = build_transcript(self._snapshots).strip()
+            if not text:
+                self.done.emit("")
+                return
+            with open(self._path, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+            self.done.emit(self._path)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -109,7 +137,8 @@ class MainWindow(QMainWindow):
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
-        self._acc = CaptionAccumulator()
+        self._snapshots = []           # raw caption snapshots, folded on Stop
+        self._savers = []              # keep save threads alive until done
         self._last_src = None          # last text sent to translate (dedup)
 
         self._reader = CaptionReader()
@@ -211,29 +240,29 @@ class MainWindow(QMainWindow):
             self._save_and_reset()
 
     def _save_and_reset(self):
-        """Write the captions to a file, then reset."""
-        source = self._acc.full_text.strip()
-        if not source:
-            self._reset_session()
+        """Hand the session's snapshots to a save thread, then reset now."""
+        snapshots = self._snapshots
+        self._reset_session()
+        if not snapshots:
             self._set_status("Stopped. Nothing to save. Ready for a new start.")
             return
 
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         path = os.path.join(transcripts_dir(), f"transcript_{ts}.txt")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(source + "\n")
-        except Exception as exc:
-            self._reset_session()
-            self._set_status(f"Stopped. Save failed: {exc}")
-            return
+        saver = SaveWorker(snapshots, path)
+        saver.done.connect(self._on_saved)
+        saver.failed.connect(lambda e: self._set_status(f"Save failed: {e}"))
+        saver.finished.connect(lambda: self._savers.remove(saver))
+        self._savers.append(saver)
+        saver.start()
+        self._set_status(f"Stopped. Saving captions to {path} … ready for a new start.")
 
-        self._reset_session()
-        self._set_status(f"Stopped. Saved captions to {path}. Ready for a new start.")
+    def _on_saved(self, path: str):
+        self._set_status(f"Saved captions to {path}" if path else "Nothing to save.")
 
     def _reset_session(self):
         """Wipe in-memory transcript state and clear the panes."""
-        self._acc.clear()
+        self._snapshots = []
         self._last_src = None
         self._worker.reset()
         self.source_text.clear()
@@ -244,12 +273,12 @@ class MainWindow(QMainWindow):
         self._set_status("Cleared (not saved).")
 
     def _on_caption(self, text: str):
-        # Accumulate the full transcript in memory (for saving on Stop), but
-        # display only the current on-screen caption (rolling, not the whole).
-        self._acc.add(text)
-        current = self._acc.current
-        self._set_text(self.source_text, current)
-        self._translate(current)
+        # Keep the raw snapshot for Stop to fold into a transcript, and get the
+        # caption itself on screen and into the translator right away — folding
+        # costs ~10 ms a snapshot, which belongs nowhere near this path.
+        self._snapshots.append(text)
+        self._set_text(self.source_text, text)
+        self._translate(text)
 
     def _translate(self, text: str):
         """Send the current caption for translation (latest-wins, deduped)."""
@@ -285,6 +314,8 @@ class MainWindow(QMainWindow):
         self._worker.stop()
         self._reader.wait(1500)
         self._worker.wait(1500)
+        for saver in list(self._savers):
+            saver.wait(15000)      # never lose a transcript to a quick close
         super().closeEvent(event)
 
 
